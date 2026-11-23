@@ -5,7 +5,7 @@ import json
 from contextlib import contextmanager
 from pathlib import Path
 
-from aiohttp import ClientResponseError
+from aiohttp import ClientConnectionError, ClientResponseError
 from aiosteampy import AppContext, SteamClient
 from aiosteampy.constants import TradeOfferStatus
 from aiosteampy.helpers import restore_from_cookies
@@ -22,6 +22,10 @@ class SteamDeliveryError(RuntimeError):
 
 class SteamRateLimitError(SteamDeliveryError):
     pass
+
+
+class SteamNetworkError(SteamDeliveryError):
+    """A transient Steam transport failure that is safe to retry later."""
 
 
 MOBILECONF_USER_AGENT = "okhttp/4.9.2"
@@ -117,8 +121,12 @@ class SteamDeliveryClient:
             except Exception:
                 # A stale/corrupt cookie cache must never prevent credential login.
                 pass
-        await self.client.login()
-        if not await self.client.is_session_alive():
+        try:
+            await self.client.login()
+            session_alive = await self.client.is_session_alive()
+        except (ClientConnectionError, asyncio.TimeoutError) as exc:
+            raise SteamNetworkError(f"Steam登录网络请求失败：{type(exc).__name__}") from None
+        if not session_alive:
             raise SteamDeliveryError("Steam登录后会话仍无效")
         await self.save_session()
 
@@ -139,12 +147,15 @@ class SteamDeliveryClient:
     async def inventory_items(self, asset_ids: tuple[int, ...]) -> list[EconItem]:
         wanted = set(asset_ids)
         found: dict[int, EconItem] = {}
-        async for items, _total, _last_asset_id in self.client.inventory(AppContext.CS2, count=2000):
-            for item in items:
-                if item.asset_id in wanted:
-                    found[item.asset_id] = item
-            if wanted == set(found):
-                break
+        try:
+            async for items, _total, _last_asset_id in self.client.inventory(AppContext.CS2, count=2000):
+                for item in items:
+                    if item.asset_id in wanted:
+                        found[item.asset_id] = item
+                if wanted == set(found):
+                    break
+        except (ClientConnectionError, asyncio.TimeoutError) as exc:
+            raise SteamNetworkError(f"读取Steam库存网络请求失败：{type(exc).__name__}") from None
         if set(found) != wanted:
             missing = sorted(wanted - set(found))
             raise SteamDeliveryError(f"Steam库存缺少目标资产：{missing}")
@@ -172,6 +183,10 @@ class SteamDeliveryClient:
                 last_error = exc
                 if attempt < attempts:
                     await asyncio.sleep(2)
+        if isinstance(last_error, (ClientConnectionError, asyncio.TimeoutError)):
+            raise SteamNetworkError(
+                f"读取Steam报价网络请求失败 offer_id={offer_id} error={type(last_error).__name__}"
+            ) from None
         raise SteamDeliveryError(f"无法读取Steam报价 {offer_id}") from last_error
 
     async def find_recovery_offer(self, order: DeliveryOrder) -> TradeOffer | None:
@@ -179,12 +194,17 @@ class SteamDeliveryClient:
         matches: list[TradeOffer] = []
         cursor = 0
         while True:
-            sent, _received, cursor = await self.client.get_trade_offers(
-                active_only=True,
-                sent=True,
-                received=False,
-                cursor=cursor,
-            )
+            try:
+                sent, _received, cursor = await self.client.get_trade_offers(
+                    active_only=True,
+                    sent=True,
+                    received=False,
+                    cursor=cursor,
+                )
+            except (ClientConnectionError, asyncio.TimeoutError) as exc:
+                raise SteamNetworkError(
+                    f"查询Steam已发送报价网络请求失败：{type(exc).__name__}"
+                ) from None
             for offer in sent:
                 if marker not in (offer.message or ""):
                     continue
@@ -203,13 +223,16 @@ class SteamDeliveryClient:
     async def create_offer(self, order: DeliveryOrder) -> int:
         items = await self.inventory_items(order.asset_ids)
         message = f"[CSFLOAT:{order.trade_id}] CSFloat delivery"
-        offer_id = await self.client.make_trade_offer(
-            order.trade_url,
-            to_give=items,
-            to_receive=[],
-            message=message,
-            confirm=False,
-        )
+        try:
+            offer_id = await self.client.make_trade_offer(
+                order.trade_url,
+                to_give=items,
+                to_receive=[],
+                message=message,
+                confirm=False,
+            )
+        except (ClientConnectionError, asyncio.TimeoutError) as exc:
+            raise SteamNetworkError(f"创建Steam报价网络请求失败：{type(exc).__name__}") from None
         offer = await self.get_offer(int(offer_id), attempts=5)
         self.validate_offer(offer, order)
         if offer.status not in {TradeOfferStatus.ACTIVE, TradeOfferStatus.CONFIRMATION_NEED}:
@@ -237,6 +260,10 @@ class SteamDeliveryClient:
                         "Steam移动确认接口限流（HTTP 429）；已创建的报价会被保留，请稍后重试"
                     ) from None
                 raise SteamDeliveryError(f"Steam移动确认请求失败：HTTP {exc.status}") from None
+            except (ClientConnectionError, asyncio.TimeoutError) as exc:
+                raise SteamNetworkError(
+                    f"Steam移动确认网络请求失败：{type(exc).__name__}"
+                ) from None
             except KeyError as exc:
                 last_error = exc
                 await asyncio.sleep(self._config.confirmation_retry_seconds)

@@ -2,11 +2,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from aiohttp import ClientConnectionError
 from csfauto.config import Config
 from csfauto.csfloat_api import CSFloatAPIError
+from csfauto.models import DeliveryOrder
 from csfauto.service import DeliveryService
 from csfauto.state import StateStore
-from csfauto.steam_client import SteamRateLimitError
+from csfauto.steam_client import SteamDeliveryClient, SteamNetworkError, SteamRateLimitError
 
 
 SELLER = 76561198886468290
@@ -107,7 +109,59 @@ class RateLimitedSteam(FakeSteam):
         raise SteamRateLimitError("Steam移动确认接口限流（HTTP 429）")
 
 
+class NetworkFailureSteam(FakeSteam):
+    async def find_recovery_offer(self, order):
+        raise SteamNetworkError("查询Steam已发送报价网络请求失败：ConnectionTimeoutError")
+
+
+class UnexpectedFailureSteam(FakeSteam):
+    async def find_recovery_offer(self, order):
+        raise RuntimeError("https://api.steampowered.com/?access_token=must-not-be-stored")
+
+
+class FailingTradeClient:
+    async def get_trade_offers(self, **kwargs):
+        raise ClientConnectionError("https://api.steampowered.com/?access_token=must-not-leak")
+
+
 class ServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_recovery_query_connection_error_is_sanitized(self):
+        steam = SteamDeliveryClient.__new__(SteamDeliveryClient)
+        steam.client = FailingTradeClient()
+        order = DeliveryOrder.from_api(raw_order(accepted=True))
+        with self.assertRaises(SteamNetworkError) as caught:
+            await steam.find_recovery_offer(order)
+        self.assertIn("查询Steam已发送报价网络请求失败", str(caught.exception))
+        self.assertNotIn("access_token", str(caught.exception))
+
+    async def test_network_failure_is_retryable_without_consuming_attempt(self):
+        with tempfile.TemporaryDirectory() as temp:
+            state = StateStore(Path(temp) / "state.db")
+            csfloat = FakeCSFloat()
+            steam = NetworkFailureSteam()
+            service = DeliveryService(live_config(Path(temp)), csfloat, state, steam)
+            await service.run_once()
+            record = state.get("1001")
+            self.assertEqual(record.status, "retryable_error")
+            self.assertEqual(record.offer_id, None)
+            self.assertEqual(record.attempts, 0)
+            self.assertNotIn("https://", record.last_error)
+            state.close()
+
+    async def test_unexpected_error_details_are_redacted(self):
+        with tempfile.TemporaryDirectory() as temp:
+            state = StateStore(Path(temp) / "state.db")
+            csfloat = FakeCSFloat()
+            steam = UnexpectedFailureSteam()
+            service = DeliveryService(live_config(Path(temp)), csfloat, state, steam)
+            await service.run_once()
+            record = state.get("1001")
+            self.assertEqual(record.status, "manual_review")
+            self.assertEqual(record.attempts, 1)
+            self.assertEqual(record.last_error, "RuntimeError: details redacted")
+            self.assertNotIn("access_token", record.last_error)
+            state.close()
+
     async def test_confirmation_rate_limit_keeps_offer_retryable(self):
         with tempfile.TemporaryDirectory() as temp:
             state = StateStore(Path(temp) / "state.db")

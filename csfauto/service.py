@@ -7,7 +7,7 @@ from .config import Config
 from .csfloat_api import CSFloatAPIError, CSFloatClient
 from .models import DeliveryOrder, OrderValidationError
 from .state import StateStore
-from .steam_client import SteamDeliveryClient, SteamDeliveryError, SteamRateLimitError
+from .steam_client import SteamDeliveryClient, SteamDeliveryError, SteamNetworkError, SteamRateLimitError
 
 
 logger = logging.getLogger("csfauto")
@@ -102,6 +102,9 @@ class DeliveryService:
             except SteamRateLimitError as exc:
                 logger.warning("订单等待Steam限流解除 trade_id=%s error=%s", order.trade_id, exc)
                 self.state.transition(order.trade_id, "retryable_error", error=str(exc))
+            except SteamNetworkError as exc:
+                logger.warning("订单等待Steam网络恢复 trade_id=%s error=%s", order.trade_id, exc)
+                self.state.transition(order.trade_id, "retryable_error", error=str(exc))
             except (SteamDeliveryError, CSFloatAPIError, OrderValidationError) as exc:
                 logger.error("订单处理失败 trade_id=%s error=%s", order.trade_id, exc)
                 previous = self.state.get(order.trade_id)
@@ -114,11 +117,15 @@ class DeliveryService:
                     increment_attempts=True,
                 )
             except Exception as exc:
-                logger.exception("订单发生未预期异常 trade_id=%s", order.trade_id)
+                logger.error(
+                    "订单发生未预期异常 trade_id=%s error_type=%s details=redacted",
+                    order.trade_id,
+                    type(exc).__name__,
+                )
                 self.state.transition(
                     order.trade_id,
                     "manual_review",
-                    error=f"{type(exc).__name__}: {exc}"[:500],
+                    error=f"{type(exc).__name__}: details redacted",
                     increment_attempts=True,
                 )
 
