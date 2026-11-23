@@ -1,0 +1,23 @@
+{
+  "mode": "dry_run",
+  "live_confirmation_phrase": "",
+  "csfloat_api_key": "",
+  "steam_id64": "",
+  "steam_login": "",
+  "steam_password": "",
+  "steam_api_key": "",
+  "shared_secret": "",
+  "identity_secret": "",
+  "poll_interval_seconds": 300,
+  "request_timeout_seconds": 30,
+  "max_retries": 4,
+  "max_order_attempts": 5,
+  "confirmation_attempts": 8,
+  "confirmation_retry_seconds": 3,
+  "require_csfloat_offer_report": true,
+  "proxy": null,
+  "steam_proxy": null,
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36",
+  "data_dir": "data"
+}
+

@@ -1,0 +1,58 @@
+# Local configuration and environment variables
+config.json
+config.local.json
+config.*.local.json
+.env
+.env.*
+!.env.example
+
+# Steam authenticator, credentials, and cookies
+*.maFile
+*.mafile
+steam.json
+*secrets*.json
+*credentials*.json
+*cookie*.json
+
+# Runtime state and logs
+data/
+logs/
+*.log
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.bak
+
+# Browser captures and exported delivery flows
+captures/
+recordings/
+*.har
+csfloat-delivery-flow-*.json
+
+# Python environments, caches, tests, and builds
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Editors and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.swp
+*~
+
