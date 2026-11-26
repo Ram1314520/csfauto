@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from aiosteampy.exceptions import SessionExpired
+
 from .config import Config
 from .csfloat_api import CSFloatAPIError, CSFloatClient
 from .models import DeliveryOrder, OrderValidationError
@@ -99,6 +101,19 @@ class DeliveryService:
         for order in orders:
             try:
                 await self._process_order(order)
+            except SessionExpired:
+                logger.warning("Steam会话已过期，重新登录后将在下一轮重试 trade_id=%s", order.trade_id)
+                try:
+                    await self.steam.refresh_session()
+                    error = "Steam会话已重新登录，等待下一轮重试"
+                except SteamDeliveryError as refresh_error:
+                    error = str(refresh_error)
+                    logger.warning(
+                        "Steam会话刷新失败，仍将在下一轮重试 trade_id=%s error=%s",
+                        order.trade_id,
+                        refresh_error,
+                    )
+                self.state.transition(order.trade_id, "retryable_error", error=error)
             except SteamRateLimitError as exc:
                 logger.warning("订单等待Steam限流解除 trade_id=%s error=%s", order.trade_id, exc)
                 self.state.transition(order.trade_id, "retryable_error", error=str(exc))

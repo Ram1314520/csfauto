@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from aiohttp import ClientConnectionError
+from aiosteampy.exceptions import SessionExpired
 from csfauto.config import Config
 from csfauto.csfloat_api import CSFloatAPIError
 from csfauto.models import DeliveryOrder
@@ -119,12 +120,37 @@ class UnexpectedFailureSteam(FakeSteam):
         raise RuntimeError("https://api.steampowered.com/?access_token=must-not-be-stored")
 
 
+class SessionExpiredSteam(FakeSteam):
+    def __init__(self):
+        super().__init__()
+        self.refreshed = False
+
+    async def find_recovery_offer(self, order):
+        raise SessionExpired
+
+    async def refresh_session(self):
+        self.refreshed = True
+
+
 class FailingTradeClient:
     async def get_trade_offers(self, **kwargs):
         raise ClientConnectionError("https://api.steampowered.com/?access_token=must-not-leak")
 
 
 class ServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_session_expiry_refreshes_login_and_remains_retryable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            state = StateStore(Path(temp) / "state.db")
+            csfloat = FakeCSFloat()
+            steam = SessionExpiredSteam()
+            service = DeliveryService(live_config(Path(temp)), csfloat, state, steam)
+            await service.run_once()
+            record = state.get("1001")
+            self.assertEqual(record.status, "retryable_error")
+            self.assertEqual(record.attempts, 0)
+            self.assertTrue(steam.refreshed)
+            state.close()
+
     async def test_recovery_query_connection_error_is_sanitized(self):
         steam = SteamDeliveryClient.__new__(SteamDeliveryClient)
         steam.client = FailingTradeClient()

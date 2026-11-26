@@ -8,6 +8,7 @@ from pathlib import Path
 from aiohttp import ClientConnectionError, ClientResponseError
 from aiosteampy import AppContext, SteamClient
 from aiosteampy.constants import TradeOfferStatus
+from aiosteampy.exceptions import SessionExpired
 from aiosteampy.helpers import restore_from_cookies
 from aiosteampy.models import EconItem, ItemDescription, TradeOffer
 from aiosteampy.utils import get_jsonable_cookies
@@ -128,6 +129,21 @@ class SteamDeliveryClient:
             raise SteamNetworkError(f"Steam登录网络请求失败：{type(exc).__name__}") from None
         if not session_alive:
             raise SteamDeliveryError("Steam登录后会话仍无效")
+        await self.save_session()
+
+    async def refresh_session(self) -> None:
+        """Re-authenticate after Steam reports that the web session expired."""
+        try:
+            await self.client.login()
+            session_alive = await self.client.is_session_alive()
+        except (ClientConnectionError, asyncio.TimeoutError) as exc:
+            raise SteamNetworkError(f"Steam重新登录网络请求失败：{type(exc).__name__}") from None
+        except SessionExpired:
+            raise SteamDeliveryError("Steam重新登录后会话仍然过期") from None
+        except Exception as exc:
+            raise SteamDeliveryError(f"Steam重新登录失败：{type(exc).__name__}") from None
+        if not session_alive:
+            raise SteamDeliveryError("Steam重新登录后会话仍无效")
         await self.save_session()
 
     async def save_session(self) -> None:

@@ -92,6 +92,20 @@ class StateStore:
             attempts=row["attempts"],
         )
 
+    def release_session_expired_reviews(self) -> int:
+        """Unlock only legacy manual reviews caused by a transient Steam session expiry."""
+        cursor = self._conn.execute(
+            """
+            UPDATE orders
+            SET status='retryable_error', attempts=0,
+                last_error='Steam会话过期记录已自动解除，等待重试', updated_at=?
+            WHERE status='manual_review' AND last_error LIKE 'SessionExpired:%'
+            """,
+            (self._now(),),
+        )
+        self._conn.commit()
+        return cursor.rowcount
+
     def transition(
         self,
         trade_id: str,

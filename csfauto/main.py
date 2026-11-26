@@ -25,6 +25,12 @@ async def async_main(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     config.data_dir.mkdir(parents=True, exist_ok=True)
     state = StateStore(config.data_dir / "state.db")
+    released = state.release_session_expired_reviews()
+    if released:
+        logging.getLogger("csfauto").warning(
+            "已解除 %d 个由Steam会话过期造成的历史人工检查状态",
+            released,
+        )
     steam: SteamDeliveryClient | None = None
     stop_event = asyncio.Event()
 
